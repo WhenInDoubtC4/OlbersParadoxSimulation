@@ -1,6 +1,8 @@
 #include "DataTable.h"
 #include "ui_DataTable.h"
 
+#include <QDebug>
+
 DataTable::DataTable(QWidget* parent) : QWidget(parent)
   , _ui(new Ui::DataTable)
 {
@@ -22,8 +24,9 @@ void DataTable::setCameraData(const float hfov, const float vfov, const float ar
 	_ui->angularAreaSqArcsecLineEdit->setText(QString::number(areaSqArcsec));
 }
 
-void DataTable::setHeader(const Clustering::method clusteringMethod)
+void DataTable::setHeader(const clusteringMethod clusteringMethod)
 {
+	clear();
 	const QList<QString> header = HEADERS[clusteringMethod];
 	_ui->tableWidget->setColumnCount(header.size());
 	_ui->tableWidget->setHorizontalHeaderLabels(header);
@@ -31,16 +34,19 @@ void DataTable::setHeader(const Clustering::method clusteringMethod)
 
 void DataTable::clear()
 {
+	_ui->tableWidget->clear();
 	_ui->tableWidget->setColumnCount(0);
 	_ui->tableWidget->setRowCount(0);
 }
 
-template<Clustering::method E, typename... Args> void DataTable::addRow([[maybe_unused]] Args... args)
+template<clusteringMethod E, typename... Args>
+void DataTable::addRow([[maybe_unused]] Args... args)
 {
 	throw std::logic_error("Unspecialized addRow function called");
 }
 
-template<> void DataTable::addRow<Clustering::method::HALLEY>(const int shellIndex, const int starCount, const float totalApvmag, const float apvmagPerSqArcsec, const float linearSurfaceBrightness)
+template<>
+void DataTable::addRow<clusteringMethod::HALLEY>(const int shellIndex, const int starCount, const double totalApvmag, const double apvmagPerSqArcsec, const double linearSurfaceBrightness)
 {
 	const QList<QString> text =
 	{
@@ -51,22 +57,27 @@ template<> void DataTable::addRow<Clustering::method::HALLEY>(const int shellInd
 		QString::number(linearSurfaceBrightness)
 	};
 
-	_ui->tableWidget->insertRow(_ui->tableWidget->rowCount());
-	for (int i = 0; i < text.size(); i++)
-	{
-		_ui->tableWidget->setItem(_ui->tableWidget->rowCount() - 1, i, new QTableWidgetItem(text[i]));
-	}
+	placeRow(text);
 }
 
-template<> void DataTable::addRow<Clustering::method::FRACTAL>(const int starCount, const float totalApvmag, const float apvmagPerSqArcsec, const float linearSurfaceBrightness)
+template<>
+void DataTable::addRow<clusteringMethod::FRACTAL>(const int levelIndex, const int starCount, const double totalApvmag, const double apvmagPerSqArcsec, const double linearSurfaceBrightness)
 {
 	const QList<QString> text =
 	{
+		QString::number(levelIndex),
 		QString::number(starCount),
-		QString::number(totalApvmag),
-		QString::number(apvmagPerSqArcsec),
-		QString::number(linearSurfaceBrightness)
+		QString::number(totalApvmag, 'g', 14),
+		QString::number(apvmagPerSqArcsec, 'g', 14),
+		QString::number(linearSurfaceBrightness, 'g', 14)
 	};
+
+	placeRow(text);
+}
+
+void DataTable::placeRow(const QList<QString>& text)
+{
+	if (Q_UNLIKELY(text.size() != _ui->tableWidget->columnCount())) throw std::logic_error("Row element count doesn't match cosumn count");
 
 	_ui->tableWidget->insertRow(_ui->tableWidget->rowCount());
 	for (int i = 0; i < text.size(); i++)
@@ -99,6 +110,11 @@ void DataTable::onExport()
 	{
 		for (int col = 0; col < _ui->tableWidget->columnCount(); col++)
 		{
+			if (!_ui->tableWidget->item(row, col))
+			{
+				fileStream << CSV_SEPARATOR;
+				continue;
+			}
 			fileStream << _ui->tableWidget->item(row, col)->text() << CSV_SEPARATOR;
 		}
 		if (Q_UNLIKELY(row == 0)) fileStream << _ui->hfovLineEdit->text() << CSV_SEPARATOR

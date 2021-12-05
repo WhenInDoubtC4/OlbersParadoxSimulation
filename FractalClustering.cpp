@@ -8,74 +8,51 @@ FractalClustering::FractalClustering(Qt3DCore::QEntity* parentEntity, QObject* p
 	_placeZeroStar = placeZeroStar;
 }
 
-void FractalClustering::start()
+void FractalClustering::calculateEstimate(int levelCount, int countPerLevel, float spacing,QTime& outEstimatedTime, int& outEstimatedCount)
 {
-	_groups.clear();
-	_volumeRadius.clear();
-	for (int level = 0; level < _levelCount; level++)
+	QList<float> volumeRadius;
+	for (int level = 0; level < levelCount; level++)
 	{
-		const float prevRadius = level == 0 ? STELLAR_RADIUS : _volumeRadius.last();
-		const float radius = (_countPerLevel - 1.f) * (_spacing + 2.f * prevRadius) + prevRadius;
-		_volumeRadius << radius;
+		const float prevRadius = level == 0 ? STELLAR_RADIUS : volumeRadius.last();
+		const float radius = (countPerLevel - 1.f) * (spacing + 2.f * prevRadius) + prevRadius;
+		volumeRadius << radius;
 	}
 
-	int levelIndex = _levelCount - 1;
-	QList<QVector3D> upperLevelPositions{QVector3D(0, 0, 0)};
-	while (levelIndex > 0)
-	{
-		QList<QVector3D> lowerLevelPositions;
-		for (const QVector3D& pos : upperLevelPositions)
-		{
-			lowerLevelPositions << calculateLevel(levelIndex, pos);
-		}
-		upperLevelPositions.clear();
-		upperLevelPositions << lowerLevelPositions;
+	constexpr float shift = CAMERA_VFOV / CAMERA_ASPECT_RATIO;
 
-		levelIndex--;
+	QList<int> count{1};
+	outEstimatedCount = 1;
+	int totalTime = 0;
+	for (int levelIndex = 1; levelIndex < levelCount; levelIndex++)
+	{
+		const int levelFactor = calculateLevel(levelIndex, QVector3D(0, 0, -shift), volumeRadius, spacing).size();
+
+		//Very sloppy calculations
+		const float projectionRadius = shift + volumeRadius[levelIndex];
+		const float projectionVolume = (4.f/3.f) * pow(projectionRadius, 3.f) * M_PI * (CAMERA_HFOV / 360.f) * (CAMERA_VFOV / 360.f);
+		const float clusterVolume = (4.f/3.f) * pow(volumeRadius[levelIndex], 3.f) * M_PI;
+		const float cullingFraction = projectionVolume / clusterVolume;
+
+		const int levelCount = count[levelIndex - 1] * levelFactor;
+		const int levelVisibleCount = floor(levelCount * cullingFraction * 1.1f);
+		count << levelCount;
+		outEstimatedCount += levelVisibleCount;
+
+		const int threadGroupSize = fmax(floor(levelVisibleCount / QThread::idealThreadCount()), STARS_PER_THREAD);
+		const int threadGroupCount = fmax(ceil(levelVisibleCount / threadGroupSize), 1);
+		totalTime += floor(float(levelVisibleCount * (THREAD_SLEEP_TIME + 1)) / float(threadGroupCount));
 	}
 
-	qApp->processEvents();
-
-	QList<QVector3D> visibleStars;
-	for (const QVector3D& pos : qAsConst(upperLevelPositions))
-	{
-		if (!isPointVisible(pos)) continue;
-		if (Q_UNLIKELY(!_placeZeroStar && pos.length() < 0.5f)) continue;
-
-		visibleStars << pos;
-	}
-	_totalStarCount = visibleStars.size();
-
-	qApp->processEvents();
-
-	std::sort(visibleStars.begin(), visibleStars.end(), [](QVector3D& a, QVector3D& b)
-	{
-		return a.length() < b.length();
-	});
-
-	qApp->processEvents();
-
-	const int fullGroupCount = floor(visibleStars.size() / STARS_PER_THREAD);
-	for (int groupIndex = 0; groupIndex < fullGroupCount; groupIndex++)
-	{
-		_groups << visibleStars.mid(groupIndex * STARS_PER_THREAD, STARS_PER_THREAD);
-	}
-	_groups << visibleStars.mid(fullGroupCount * STARS_PER_THREAD, visibleStars.size() % STARS_PER_THREAD);
-
-	_runningThreads = 0;
-	_threadCount = QThread::idealThreadCount();
-	_totalStarsPlaced = 0;
-	_apvmagSum = 0.f;
-	construct();
+	outEstimatedTime = QTime(0, 0).addMSecs(totalTime);
 }
 
-const QList<QVector3D> FractalClustering::calculateLevel(int level, const QVector3D origin)
+const QList<QVector3D> FractalClustering::calculateLevel(int level, const QVector3D& origin, QList<float>& volumeRadius, const float spacing)
 {
-	assert(level > 0);
+	assert(level > 0 && level < volumeRadius.size());
 	QList<QVector3D> subLevelPositions;
-	const float minExtent = -_volumeRadius[level] + _volumeRadius[level - 1];
-	const float increment = (2 * _volumeRadius[level - 1]) + _spacing;
-	const float maxExtent = _volumeRadius[level] - _volumeRadius[level - 1];
+	const float minExtent = -volumeRadius[level] + volumeRadius[level - 1];
+	const float increment = (2 * volumeRadius[level - 1]) + spacing;
+	const float maxExtent = volumeRadius[level] - volumeRadius[level - 1];
 
 	//*Ignore wanings and use floats as loop counters*
 	for (float x = minExtent; x <= maxExtent; x += increment)
@@ -85,7 +62,7 @@ const QList<QVector3D> FractalClustering::calculateLevel(int level, const QVecto
 			for (float z = minExtent; z <= maxExtent; z+= increment)
 			{
 				const QVector3D o(x, y, z);
-				if (o.length() >= float(_volumeRadius[level]) + (1.f/2.f) * float(_volumeRadius[level - 1])) continue;
+				if (o.length() >= float(volumeRadius[level]) + (1.f/2.f) * float(volumeRadius[level - 1])) continue;
 				subLevelPositions << QVector3D(o + origin);
 			}
 		}
@@ -94,56 +71,134 @@ const QList<QVector3D> FractalClustering::calculateLevel(int level, const QVecto
 	return subLevelPositions;
 }
 
+void FractalClustering::start()
+{
+	_threadGroups.clear();
+	_volumeRadius.clear();
+	for (int level = 0; level < _levelCount; level++)
+	{
+		const float prevRadius = level == 0 ? STELLAR_RADIUS : _volumeRadius.last();
+		const float radius = (_countPerLevel - 1.f) * (_spacing + 2.f * prevRadius) + prevRadius;
+		_volumeRadius << radius;
+	}
+
+	QList<QVector3D> previousLevel{QVector3D(0, 0, -CAMERA_VFOV / CAMERA_ASPECT_RATIO)};
+	_stars << previousLevel;
+	for (int levelIndex = 1; levelIndex < _levelCount; levelIndex++)
+	{
+		QList<QVector3D> nextLevel;
+		for (const QVector3D& pos : previousLevel)
+		{
+			nextLevel << calculateLevel(levelIndex, pos, _volumeRadius, _spacing);
+		}
+		previousLevel.clear();
+		previousLevel = nextLevel;
+		_stars << nextLevel;
+	}
+
+	//Occlusion culling and counting
+	_totalStarCount = 0;
+	QList<QList<QVector3D>> visibleStars;
+	for (int level = 0; level < _stars.size(); level++)
+	{
+		QList<QVector3D> visibleStarsInLevel;
+		for (const QVector3D& star : _stars[level])
+		{
+			if (isPointVisible(star)) visibleStarsInLevel << star;
+		}
+		visibleStars << visibleStarsInLevel;
+		_totalStarCount += visibleStarsInLevel.size();
+	}
+
+	_stars = visibleStars;
+
+	//Sort by distance
+	for (int level = 0; level < _stars.size(); level++)
+	{
+		std::sort(_stars[level].begin(), _stars[level].end(), [](QVector3D& a, QVector3D& b)
+		{
+			return a.length() < b.length();
+		});
+	}
+
+	qApp->processEvents();
+
+	_currentLevelIndex = 0;
+	_starsPlaced = 0;
+	construct();
+}
+
 void FractalClustering::construct()
 {
-	const bool empty = _groups.length() == 0;
-	if (empty && _runningThreads == 0) emit finished();
-	if (empty || _runningThreads == _threadCount || _terminatePending) return;
+	//Exit if current cluster is still constructing
+	if (!_threadGroups.isEmpty()) return;
 
-	QThread* thread = QThread::create([=]
+	if (_currentLevelIndex > 0)
 	{
-		const QList<QVector3D> stars = _groups.length() > 0 ? _groups.takeFirst() : QList<QVector3D>{};
-		construct();
-		for (const QVector3D& location : stars)
+		double apvmagSum = 0.;
+		//Stars in current and previous levels
+		for (int levelIndex = 0; levelIndex < _currentLevelIndex; levelIndex++)
 		{
-			if (_terminatePending) return;
-
-			thread->msleep(THREAD_SLEEP_TIME);
-			_groupMutex.lock();
-
-			auto starEntity = createStar(location);
-			if (!_parentEntity || _terminatePending)
+			for (const QVector3D& star : _stars[levelIndex])
 			{
-				_groupMutex.unlock();
-				continue;
+				const double distance = star.length();
+				const double apvmag = ABSOLUTE_VISUAL_MAGNITUDE + 5. * log10(distance / 10.);
+				apvmagSum += pow(10., -0.4 * apvmag);
 			}
-			starEntity->moveToThread(_parentEntity->thread());
-			starEntity->setParent(_parentEntity);
-
-			emit updateProgress(qRound((float(++_totalStarsPlaced) / float(_totalStarCount)) * 100.f));
-
-			float distance = location.length();
-			if (Q_UNLIKELY(distance < 1.2f)) distance = 1.2f;
-			const float apvmag = ABSOLUTE_VISUAL_MAGNITUDE + 5.f * log10(distance / 10.f);
-			_apvmagSum += apvmag;
-			if (_totalStarsPlaced % STARS_PER_THREAD == 0 || _totalStarsPlaced == _totalStarCount)
-			{
-				const float totalApvmag = -2.5f * log10(_apvmagSum);
-				emit groupDone(_totalStarsPlaced, totalApvmag);
-			}
-
-			_groupMutex.unlock();
-			qApp->processEvents();
 		}
-	});
-	QObject::connect(thread, &QThread::finished, [=]
+		apvmagSum = -2.5 * log10(apvmagSum);
+
+		const double surfaceBrightness = apvmagSum + 2.5 * log10(CAMERA_ANGULAR_AREA_SQ_ARCSEC);
+		const double linearSurfaceBrightness = pow(M_E, -surfaceBrightness);
+
+		if (_dataTable) _dataTable->addRow<clusteringMethod::FRACTAL>(_currentLevelIndex - 1, _starsPlaced, apvmagSum, surfaceBrightness, linearSurfaceBrightness);
+		if (_dataChart) _dataChart->addDataPoint(_starsPlaced, surfaceBrightness);
+		emit clusterDone();
+	}
+
+	if (_currentLevelIndex == _stars.size())
 	{
-		thread->deleteLater();
-		_runningThreads--;
-		construct();
-	});
-	thread->start();
-	_runningThreads++;
+		emit finished();
+		return;
+	}
+
+	_starsPlacedInLevel	= 0;
+	const QList<QVector3D>& starsInLevel = _stars[_currentLevelIndex];
+
+	_threadGroups.clear();
+	_threadGroups = distributeStarsInThreads(starsInLevel);
+
+	emit requestReserveGroups(_threadGroups.size());
+
+	for (int groupIndex = 0; groupIndex < _threadGroups.size(); groupIndex++)
+	{
+		threadGroup* currentGroup = _threadGroups[groupIndex];
+		currentGroup->thread = QThread::create([=]
+		{
+			for (const QVector3D& starLocation : qAsConst(currentGroup->stars))
+			{
+				currentGroup->thread->msleep(THREAD_SLEEP_TIME);
+
+				_groupMutex.lock();
+				emit requestAddStarInGroup(groupIndex, starLocation);
+
+				emit updateProgress(++_starsPlaced, _totalStarCount);
+				emit updateProgress(++_starsPlacedInLevel, starsInLevel.size(), true);
+
+				_groupMutex.unlock();
+				if (_terminatePending) return;
+			}
+		});
+		QObject::connect(currentGroup->thread, &QThread::finished, [=]
+		{
+			currentGroup->thread->deleteLater();
+			_threadGroups.removeAll(currentGroup);
+			construct();
+		});
+		currentGroup->thread->start();
+	}
+
+	_currentLevelIndex++;
 }
 
 void FractalClustering::terminate()

@@ -14,6 +14,8 @@ SOURCES += \
     DataTable.cpp \
     FractalClustering.cpp \
     HalleyClustering.cpp \
+    InstancedStar.cpp \
+    InstancedStarMaterial.cpp \
     LinearizedChart.cpp \
     main.cpp \
     MainWindow.cpp
@@ -25,6 +27,8 @@ HEADERS += \
     FractalClustering.h \
     Global.h \
     HalleyClustering.h \
+    InstancedStar.h \
+    InstancedStarMaterial.h \
     LinearizedChart.h \
     MainWindow.h
 
@@ -41,3 +45,6 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 
 DISTFILES += \
 	.gitignore
+
+RESOURCES += \
+	shaders.qrc

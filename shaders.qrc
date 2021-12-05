@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/">
+        <file>InstancedStar.frag</file>
+        <file>InstancedStar.vert</file>
+        <file>light.inc.frag</file>
+    </qresource>
+</RCC>

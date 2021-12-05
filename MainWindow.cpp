@@ -3,23 +3,39 @@
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
   , _ui(new Ui::MainWindow)
+  , _progressStackPlaceholder(new QWidget())
   , _progressBar(new QProgressBar())
+  , _progressLabel(new QLabel())
+  , _clusterProgressStackPlaceholder(new QWidget())
   , _clusterProgressBar(new QProgressBar())
+  , _clusterProgressLabel(new QLabel())
 {
 	_ui->setupUi(this);
 
-	_progressBar->setMaximumWidth(200);
-	_progressBar->setAlignment(Qt::AlignRight);
-	_progressBar->setTextVisible(true);
-	_progressBar->setFormat("Total: %p%");
-	_clusterProgressBar->setMaximumWidth(200);
-	_clusterProgressBar->setTextVisible(true);
-	_clusterProgressBar->setFormat("Cluster: %p%");
-	_ui->statusbar->addPermanentWidget(_progressBar);
-	_ui->statusbar->addPermanentWidget(_clusterProgressBar);
+	QFont monospacedFont = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+
+	_progressStack = new QStackedLayout(_progressStackPlaceholder);
+	_progressStack->setStackingMode(QStackedLayout::StackAll);
+	_progressStack->addWidget(_progressBar);
+	_progressStack->addWidget(_progressLabel);
+	_progressStack->setCurrentIndex(1);
+	_progressStackPlaceholder->setMaximumWidth(200);
+	_progressLabel->setAlignment(Qt::AlignCenter);
+	_progressLabel->setFont(monospacedFont);
+	_ui->statusbar->addPermanentWidget(_progressStackPlaceholder);
+
+	_clusterProgressStack = new QStackedLayout(_clusterProgressStackPlaceholder);
+	_clusterProgressStack->setStackingMode(QStackedLayout::StackAll);
+	_clusterProgressStack->addWidget(_clusterProgressBar);
+	_clusterProgressStack->addWidget(_clusterProgressLabel);
+	_clusterProgressStack->setCurrentIndex(1);
+	_clusterProgressStackPlaceholder->setMaximumWidth(200);
+	_clusterProgressLabel->setAlignment(Qt::AlignCenter);
+	_clusterProgressLabel->setFont(monospacedFont);
+	_ui->statusbar->addPermanentWidget(_clusterProgressStackPlaceholder);
 
 	_viewport = new Qt3DExtras::Qt3DWindow(nullptr, Qt3DRender::API::OpenGL);
-	_viewport->renderSettings()->setRenderPolicy(Qt3DRender::QRenderSettings::RenderPolicy::OnDemand);
+	_viewport->renderSettings()->setRenderPolicy(Qt3DRender::QRenderSettings::RenderPolicy::Always);
 	_viewportContainer = QWidget::createWindowContainer(_viewport);
 
 	_renderCapture = new Qt3DRender::QRenderCapture();
@@ -35,11 +51,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 	_viewport->setRootEntity(_rootEntity);
 
 	//Set up camera
-	_viewport->camera()->setPosition(QVector3D(0.f, 0.f, 0.f));
+	_viewport->camera()->setPosition(QVector3D(0, 0, 0));
 	_viewport->camera()->setUpVector(QVector3D(0, 1, 0));
-	_viewport->camera()->setViewCenter(QVector3D(0, 0, 0));
 	_viewport->camera()->lens()->setPerspectiveProjection(CAMERA_VFOV, CAMERA_ASPECT_RATIO, CAMERA_NEAR_CLIP_PLANE, CAMERA_FAR_CLIP_PLANE);
-	_viewport->camera()->setPosition(QVector3D(0.f, 0.f, 0.f));
 
 	auto directionalLightEntity = new Qt3DCore::QEntity(_rootEntity);
 	auto directionalLight = new Qt3DRender::QDirectionalLight();
@@ -61,6 +75,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 	QObject::connect(_ui->clearButton, &QPushButton::pressed, this, &MainWindow::onClearPressed);
 
 	QObject::connect(_ui->renderSaveLocationButton, &QPushButton::clicked, this, &MainWindow::selectRenderSaveLocation);
+
+	QObject::connect(_ui->clusteringComboBox, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->shellCountSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->shellThicknessSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->firstShellDistanceSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->levelCountSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->countPerLevelSpinBox, qOverload<int>(&QSpinBox::valueChanged), this, &MainWindow::updateEstimate);
+	QObject::connect(_ui->spacingSpinBox, qOverload<double>(&QDoubleSpinBox::valueChanged), this, &MainWindow::updateEstimate);
 }
 
 MainWindow::~MainWindow()
@@ -103,7 +125,9 @@ void MainWindow::updateUI(bool running)
 	{
 		_ui->statusbar->showMessage("Done", 30*1000);
 		_progressBar->setValue(0);
+		_progressLabel->setText(QString());
 		_clusterProgressBar->setValue(0);
+		_clusterProgressLabel->setText(QString());
 	}
 
 	_ui->shellCountSpinBox->setEnabled(!running);
@@ -120,59 +144,49 @@ void MainWindow::updateUI(bool running)
 
 	_ui->saveRenderCheckBox->setEnabled(!running);
 	_ui->renderSaveLocationButton->setEnabled(!running);
+	_ui->renderSaveLocationLineEdit->setEnabled(!running);
 }
 
 void MainWindow::onRunPressed()
 {
 	updateUI(true);
 
-	const auto selectedClusteringMethod = static_cast<Clustering::method>(_ui->clusteringComboBox->currentIndex());
+	const auto selectedClusteringMethod = static_cast<clusteringMethod>(_ui->clusteringComboBox->currentIndex());
 
-	if (_activeClustering) delete _activeClustering;
+	if (_activeClustering)
+	{
+		delete _activeClustering;
+		_activeClustering = nullptr;
+	}
 
 	switch (selectedClusteringMethod)
 	{
-		case Clustering::method::HALLEY:
+		case clusteringMethod::HALLEY:
 		{
 			auto halleyClustering = new HalleyClustering(_starRootEntity, this, _ui->shellCountSpinBox->value(), _ui->shellThicknessSpinBox->value(), _ui->firstShellDistanceSpinBox->value());
-			QObject::connect(halleyClustering, &HalleyClustering::updateClusterProgress, _clusterProgressBar, &QProgressBar::setValue);
-			QObject::connect(halleyClustering, &HalleyClustering::shellDone, [=](const int shellIndex, const int starCount, const float totalApvmag)
-			{
-				const float surfaceBrightness = totalApvmag + 2.5f * log10(CAMERA_ANGULAR_AREA_SQ_ARCSEC);
-				const float linearSurfaceBrightness = pow(M_E, -surfaceBrightness);
-				_ui->dataTable->addRow<Clustering::method::HALLEY>(shellIndex, starCount, totalApvmag, surfaceBrightness, linearSurfaceBrightness);
-				_ui->dataChart->addDataPoint(starCount, surfaceBrightness);
-				_ui->linearizedChart->addLinearPoint(starCount, linearSurfaceBrightness);
-			});
-			QObject::connect(halleyClustering, &HalleyClustering::shellDone, this, &MainWindow::saveRender);
 			_activeClustering = halleyClustering;
 			break;
 		}
-		case Clustering::method::FRACTAL:
+		case clusteringMethod::FRACTAL:
 		{
 			auto fractalClustering = new FractalClustering(_starRootEntity, this, _ui->levelCountSpinBox->value(), _ui->countPerLevelSpinBox->value(), _ui->spacingSpinBox->value(), _ui->centralClusterCheckBox->isChecked());
-			QObject::connect(fractalClustering, &FractalClustering::groupDone, [=](const int totalStarCount, const float totalApvmag)
-			{
-				const float surfaceBrightness = totalApvmag + 2.5f * log10(CAMERA_ANGULAR_AREA_SQ_ARCSEC);
-				const float linearSurfaceBrightness = pow(M_E, -surfaceBrightness);
-				_ui->dataTable->addRow<Clustering::method::FRACTAL>(totalStarCount, totalApvmag, surfaceBrightness, linearSurfaceBrightness);
-				_ui->dataChart->addDataPoint(totalStarCount, surfaceBrightness);
-				_ui->linearizedChart->addLinearPoint(totalStarCount, linearSurfaceBrightness);
-			});
-			QObject::connect(fractalClustering, &FractalClustering::groupDone, this, &MainWindow::saveRender);
 			_activeClustering = fractalClustering;
 			break;
 		}
 	}
 
+	QObject::connect(_activeClustering, &Clustering::clusterDone, this, &MainWindow::saveRender);
 	QObject::connect(_activeClustering, &Clustering::finished, this, &MainWindow::onFinished);
-	QObject::connect(_activeClustering, &Clustering::updateProgress, _progressBar, &QProgressBar::setValue);
+	QObject::connect(_activeClustering, &Clustering::updateProgress, this, &MainWindow::updateProgress);
 
 	_activeClustering->setCameraProjectionMatrix(_viewport->camera()->projectionMatrix(), _viewport->camera()->viewMatrix(), _viewportContainer->rect());
 	_activeClustering->setStarProperties(_ui->sizeSpinBox->value(), _ui->distanceScalePowerSpinBox->value());
+	_activeClustering->setDataTable(_ui->dataTable);
+	_ui->dataTable->setHeader(selectedClusteringMethod);
+	_activeClustering->setDataChart(_ui->dataChart);
+	_activeClustering->setLinearizedChart(_ui->linearizedChart);
 	_activeClustering->start();
 
-	_ui->dataTable->setHeader(selectedClusteringMethod);
 }
 
 void MainWindow::onTerminatePressed()
@@ -205,10 +219,21 @@ void MainWindow::onClearPressed()
 
 void MainWindow::onFinished()
 {
-	delete _activeClustering;
-	_activeClustering = nullptr;
-
 	updateUI(false);
+}
+
+void MainWindow::updateProgress(const int placed, const int total, bool cluster)
+{
+	QProgressBar* progressBar = _progressBar;
+	QLabel* label = _progressLabel;
+	if (cluster)
+	{
+		progressBar = _clusterProgressBar;
+		label = _clusterProgressLabel;
+	}
+	float percentage = (float(placed) / float(total)) * 100.f;
+	progressBar->setValue(percentage);
+	label->setText(QString::number(placed) + "/" + QString::number(total) + " (" + QString::number(percentage, 'f', 0) + "%)");
 }
 
 void MainWindow::selectRenderSaveLocation()
@@ -229,4 +254,22 @@ void MainWindow::saveRender()
 		_reply->deleteLater();
 		_reply = nullptr;
 	});
+}
+
+void MainWindow::updateEstimate()
+{
+	const auto selectedClusteringMethod = static_cast<clusteringMethod>(_ui->clusteringComboBox->currentIndex());
+	QTime estimatedTime;
+	int estimatedCount;
+	switch (selectedClusteringMethod)
+	{
+		case clusteringMethod::HALLEY:
+			HalleyClustering::calculateEstimate(_ui->shellCountSpinBox->value(), _ui->shellThicknessSpinBox->value(), _ui->firstShellDistanceSpinBox->value(), estimatedTime, estimatedCount);
+			break;
+		case clusteringMethod::FRACTAL:
+			FractalClustering::calculateEstimate(_ui->levelCountSpinBox->value(), _ui->countPerLevelSpinBox->value(), _ui->spacingSpinBox->value(), estimatedTime, estimatedCount);
+			break;
+	}
+	_ui->estimatedCountLineEdit->setText(QString::number(estimatedCount));
+	_ui->etaLineEdit->setText(estimatedTime.toString("hh:mm:ss"));
 }

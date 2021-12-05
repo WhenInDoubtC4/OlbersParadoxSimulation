@@ -9,6 +9,27 @@ HalleyClustering::HalleyClustering(Qt3DCore::QEntity* parentEntity, QObject* par
 	_firstShellDistance = firstShellDistance;
 }
 
+void HalleyClustering::calculateEstimate(int shellCount, float shellThickness, float firstShellDistance, QTime& outEstimatedTime, int& outEstimatedCount)
+{
+	outEstimatedCount = 0;
+	int totalTime = 0;
+
+	for (int n = 0; n < shellCount; n++)
+	{
+		const float outerRadius = firstShellDistance + n * shellThickness;
+		const float innerRadius = firstShellDistance + (n + 1) * shellThickness;
+		const float volume = (4.f / 3.f) * M_PI * (pow(innerRadius, 3) - pow(outerRadius, 3));
+		const int starCount = qRound(floor(volume / STELLAR_DENSITY) * CULLING_FRACTION);
+		outEstimatedCount += starCount;
+
+		const int threadGroupSize = fmax(floor(starCount / QThread::idealThreadCount()), STARS_PER_THREAD);
+		const int threadGroupCount = fmax(ceil(starCount / threadGroupSize), 1);
+		totalTime += floor(float(starCount * (THREAD_SLEEP_TIME + 1)) / float(threadGroupCount));
+	}
+
+	outEstimatedTime = QTime(0, 0).addMSecs(totalTime);
+}
+
 void HalleyClustering::start()
 {
 	_terminatePending = false;
@@ -46,7 +67,6 @@ void HalleyClustering::start()
 			//Occlusion culling
 			if (isPointVisible(locaton)) shell << locaton;
 		}
-		qDebug() << "SHELL#" << n << "R_outer (pc):" << outerRadius << "R_inner (pc):" << innerRadius << "Volume (pc^3):" << volume << "Stars:" << shell.size();
 		_stars << shell;
 		_totalStarCount += shell.size();
 	}
@@ -62,81 +82,71 @@ void HalleyClustering::terminate()
 void HalleyClustering::constructShell()
 {
 	//Exit if current shell is still constructing
-	if (!_currentShellThreads.isEmpty()) return;
+	if (!_threadGroups.isEmpty()) return;
 
 	if (_currentShellIndex > 0)
 	{
 		QList<QVector3D> starsInCurrentAndPreviousShells;
 		for (int i = 0; i < _currentShellIndex; i++) starsInCurrentAndPreviousShells << _stars[i];
-		float apvmagSum = 0.f;
+		double apvmagSum = 0.;
 		for (const QVector3D& star : starsInCurrentAndPreviousShells)
 		{
-			const float distance = star.length();
-			const float apvmag = ABSOLUTE_VISUAL_MAGNITUDE + 5.f * log10(distance / 10.f);
-			apvmagSum += pow(10.f, (-0.4f * apvmag));
+			const double distance = star.length();
+			const double apvmag = ABSOLUTE_VISUAL_MAGNITUDE + 5. * log10(distance / 10.);
+			apvmagSum += pow(10., (-0.4 * apvmag));
 		}
-		apvmagSum = -2.5f * log10(apvmagSum);
+		apvmagSum = -2.5 * log10(apvmagSum);
 
-		emit shellDone(_currentShellIndex - 1, starsInCurrentAndPreviousShells.size(), apvmagSum);
+		const int starCount = starsInCurrentAndPreviousShells.size();
+		const double surfaceBrightness = apvmagSum + 2.5 * log10(CAMERA_ANGULAR_AREA_SQ_ARCSEC);
+		const double linearSurfaceBrightness = pow(M_E, -surfaceBrightness);
+
+		if (_dataTable) _dataTable->addRow<clusteringMethod::HALLEY>(_currentShellIndex - 1, starCount, apvmagSum, surfaceBrightness, linearSurfaceBrightness);
+		if (_dataChart) _dataChart->addDataPoint(starCount, surfaceBrightness);
+		emit clusterDone();
 	}
 
+	//Was last shell to construct
 	if (_currentShellIndex == _shellCount)
 	{
-		 emit finished();
-		 return;
+		emit finished();
+		return;
 	}
 
 	_starsPlacedInShell = 0;
-	const QList<QVector3D> starsInShell = _stars[_currentShellIndex];
+	const QList<QVector3D>& starsInShell = _stars[_currentShellIndex];
 
-	_groups.clear();
+	_threadGroups.clear();
+	_threadGroups = distributeStarsInThreads(starsInShell);
 
-	//Full groups
-	const int fullGroupCount = floor(starsInShell.size() / STARS_PER_THREAD);
-	for (int groupIndex = 0; groupIndex < fullGroupCount; groupIndex++)
+	emit requestReserveGroups(_threadGroups.size());
+
+	for (int groupIndex = 0; groupIndex < _threadGroups.size(); groupIndex++)
 	{
-		_groups << starsInShell.mid(groupIndex * STARS_PER_THREAD, STARS_PER_THREAD);
-	}
-	//Last group
-	_groups << starsInShell.mid(fullGroupCount * STARS_PER_THREAD, starsInShell.size() % STARS_PER_THREAD);
-
-	for (int groupIndex = 0; groupIndex < _groups.size(); groupIndex++)
-	{
-		QThread* thread = QThread::create([=]
+		threadGroup* currentGroup = _threadGroups[groupIndex];
+		currentGroup->thread = QThread::create([=]
 		{
-			const QList<QVector3D>& stars = _groups[groupIndex];
-			for (const QVector3D& location : stars)
-			{	
-				if (_terminatePending) return;
+			for (const QVector3D& starLocation : qAsConst(currentGroup->stars))
+			{
+				currentGroup->thread->msleep(THREAD_SLEEP_TIME);
 
-				thread->msleep(THREAD_SLEEP_TIME);
 				_groupMutex.lock();
+				emit requestAddStarInGroup(groupIndex, starLocation);
 
-				auto starEntity = createStar(location);
-
-				if (!_parentEntity || _terminatePending)
-				{
-					_groupMutex.unlock();
-					continue;
-				}
-				starEntity->moveToThread(_parentEntity->thread());
-				starEntity->setParent(_parentEntity);
-
-				emit updateProgress(qRound((float(++_starsPlaced) / float(_totalStarCount)) * 100.f));
-				emit updateClusterProgress(qRound(float(++_starsPlacedInShell) / float(starsInShell.size()) * 100.f));
+				emit updateProgress(++_starsPlaced, _totalStarCount);
+				emit updateProgress(++_starsPlacedInShell, starsInShell.size(), true);
 
 				_groupMutex.unlock();
-				qApp->processEvents();
+				if (_terminatePending) return;
 			}
 		});
-		_currentShellThreads << thread;
-		QObject::connect(thread, &QThread::finished, [=]
+		QObject::connect(currentGroup->thread, &QThread::finished, [=]
 		{
-			_currentShellThreads.removeAll(thread);
-			thread->deleteLater();
+			currentGroup->thread->deleteLater();
+			_threadGroups.removeAll(currentGroup);
 			constructShell();
 		});
-		thread->start();
+		currentGroup->thread->start();
 	}
 
 	_currentShellIndex++;

@@ -2,6 +2,7 @@
 
 #include <QMainWindow>
 #include <QProgressBar>
+#include <QStackedLayout>
 #include <QDateTime>
 #include <Qt3DExtras/Qt3DWindow>
 #include <Qt3DExtras/QForwardRenderer>
@@ -44,8 +45,14 @@ private:
 
 	QMutex _clearThreadMutex;
 
+	QWidget* _progressStackPlaceholder = nullptr;
+	QWidget* _clusterProgressStackPlaceholder = nullptr;
+	QStackedLayout* _progressStack = nullptr;
+	QStackedLayout* _clusterProgressStack = nullptr;
 	QProgressBar* _progressBar = nullptr;
 	QProgressBar* _clusterProgressBar = nullptr;
+	QLabel* _progressLabel = nullptr;
+	QLabel* _clusterProgressLabel = nullptr;
 
 	Qt3DRender::QRenderCapture* _renderCapture = nullptr;
 	Qt3DRender::QRenderCaptureReply* _reply = nullptr;
@@ -58,6 +65,10 @@ private slots:
 	void onClearPressed();
 	void onFinished();
 
+	void updateProgress(const int placed, const int total, bool cluster = false);
+
 	void selectRenderSaveLocation();
 	void saveRender();
+
+	void updateEstimate();
 };

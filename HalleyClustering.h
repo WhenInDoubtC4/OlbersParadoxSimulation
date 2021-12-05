@@ -14,17 +14,18 @@ public:
 	virtual void start() override;
 	virtual void terminate() override;
 
+	static void calculateEstimate(int shellCount, float shellThickness, float firstShellDistance, QTime& outEstimatedTime, int& outEstimatedCount);
+
 private:
+
 	int _shellCount;
 	float _shellThickness;
 	float _firstShellDistance;
 
 	QList<QList<QVector3D>> _stars;
-	QList<QThread*> _currentShellThreads;
 	QRecursiveMutex _groupMutex;
 	int _currentShellIndex = 0;
-
-	QList<QList<QVector3D>> _groups;
+	QList<threadGroup*> _threadGroups;
 
 	bool _terminatePending = false;
 
@@ -34,8 +35,4 @@ private:
 
 private slots:
 	void constructShell();
-
-signals:
-	void shellDone(const int shellIndex, const int starCount, const float totalApvmag);
 };
-
