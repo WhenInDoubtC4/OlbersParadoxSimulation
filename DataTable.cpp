@@ -52,9 +52,9 @@ void DataTable::addRow<clusteringMethod::HALLEY>(const int shellIndex, const int
 	{
 		QString::number(shellIndex),
 		QString::number(starCount),
-		QString::number(totalApvmag),
-		QString::number(apvmagPerSqArcsec),
-		QString::number(linearSurfaceBrightness)
+		QString::number(totalApvmag, 'g', 14),
+		QString::number(apvmagPerSqArcsec, 'g', 14),
+		QString::number(linearSurfaceBrightness, 'g', 14)
 	};
 
 	placeRow(text);

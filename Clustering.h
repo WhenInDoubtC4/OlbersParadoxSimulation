@@ -32,6 +32,7 @@ public:
 	void setDataTable(DataTable* dataTable){ _dataTable = dataTable; };
 	void setDataChart(DataChart* dataChart){ _dataChart = dataChart; };
 	void setLinearizedChart(LinearizedChart* linearizedChart){ _linearizedChart = linearizedChart; };
+	void setNextClusterReady(){ _isNextClusterReady = true; };
 
 public slots:
 	void reserveGroups(const int count);
@@ -54,6 +55,8 @@ protected:
 	DataTable* _dataTable = nullptr;
 	DataChart* _dataChart = nullptr;
 	LinearizedChart* _linearizedChart = nullptr;
+
+	bool _isNextClusterReady = false;
 
 private:
 	struct instancedStarGroup

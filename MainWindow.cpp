@@ -244,7 +244,11 @@ void MainWindow::selectRenderSaveLocation()
 
 void MainWindow::saveRender()
 {
-	if (!_ui->saveRenderCheckBox->isChecked() || !QDir(_ui->renderSaveLocationLineEdit->text()).exists()) return;
+	if (!_ui->saveRenderCheckBox->isChecked() || !QDir(_ui->renderSaveLocationLineEdit->text()).exists())
+	{
+		_activeClustering->setNextClusterReady();
+		return;
+	}
 
 	const QString timeSignature = QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
 	_reply = _renderCapture->requestCapture();
@@ -254,6 +258,8 @@ void MainWindow::saveRender()
 		_reply->deleteLater();
 		_reply = nullptr;
 	});
+
+	_activeClustering->setNextClusterReady();
 }
 
 void MainWindow::updateEstimate()

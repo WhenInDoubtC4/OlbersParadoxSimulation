@@ -72,6 +72,7 @@ void HalleyClustering::start()
 	}
 
 	constructShell();
+	_isNextClusterReady = true;
 }
 
 void HalleyClustering::terminate()
@@ -103,6 +104,8 @@ void HalleyClustering::constructShell()
 
 		if (_dataTable) _dataTable->addRow<clusteringMethod::HALLEY>(_currentShellIndex - 1, starCount, apvmagSum, surfaceBrightness, linearSurfaceBrightness);
 		if (_dataChart) _dataChart->addDataPoint(starCount, surfaceBrightness);
+		if (_linearizedChart) _linearizedChart->addLinearPoint(starCount, linearSurfaceBrightness);
+		_isNextClusterReady = false;
 		emit clusterDone();
 	}
 
@@ -126,6 +129,14 @@ void HalleyClustering::constructShell()
 		threadGroup* currentGroup = _threadGroups[groupIndex];
 		currentGroup->thread = QThread::create([=]
 		{
+			_groupMutex.lock();
+			while (!_isNextClusterReady)
+			{
+				qApp->processEvents();
+				currentGroup->thread->msleep(THREAD_SLEEP_TIME);
+			}
+			_groupMutex.unlock();
+
 			for (const QVector3D& starLocation : qAsConst(currentGroup->stars))
 			{
 				currentGroup->thread->msleep(THREAD_SLEEP_TIME);

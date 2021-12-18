@@ -125,6 +125,7 @@ void FractalClustering::start()
 
 	_currentLevelIndex = 0;
 	_starsPlaced = 0;
+	_isNextClusterReady = true;
 	construct();
 }
 
@@ -153,6 +154,8 @@ void FractalClustering::construct()
 
 		if (_dataTable) _dataTable->addRow<clusteringMethod::FRACTAL>(_currentLevelIndex - 1, _starsPlaced, apvmagSum, surfaceBrightness, linearSurfaceBrightness);
 		if (_dataChart) _dataChart->addDataPoint(_starsPlaced, surfaceBrightness);
+		if (_linearizedChart) _dataChart->addDataPoint(_starsPlaced, linearSurfaceBrightness);
+		_isNextClusterReady = false;
 		emit clusterDone();
 	}
 
@@ -175,6 +178,14 @@ void FractalClustering::construct()
 		threadGroup* currentGroup = _threadGroups[groupIndex];
 		currentGroup->thread = QThread::create([=]
 		{
+			_groupMutex.lock();
+			while (!_isNextClusterReady)
+			{
+				qApp->processEvents();
+				currentGroup->thread->msleep(THREAD_SLEEP_TIME);
+			}
+			_groupMutex.unlock();
+
 			for (const QVector3D& starLocation : qAsConst(currentGroup->stars))
 			{
 				currentGroup->thread->msleep(THREAD_SLEEP_TIME);
